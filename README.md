@@ -1,2 +1,2 @@
 # Robotics
-Matlab codes for kinematic and dyanmic simulation of robotic manipulator
+Matlab codes for kinematic and dynamic simulation of robotic manipulator
