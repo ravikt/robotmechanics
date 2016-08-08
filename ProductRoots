@@ -1,0 +1,6 @@
+# Description of other places in the MATLAB install where builtin functions may be found.
+# DO NOT use this, unless you have been instructed in its use.
+../toolbox/simbio/bin #
+../toolbox/simple_builtins/bin #
+
+

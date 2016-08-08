@@ -1,0 +1,588 @@
+#!/bin/sh
+#
+#  Name:
+#
+#      deploytool    script file for invoking Deploytool binary in bin/ARCH dir
+#
+#
+#  Copyright 1998-2007 The MathWorks, Inc.
+
+#__________________________________________________________________________
+#
+    arg0_=$0
+    tmpbase=/tmp/deploytool.$LOGNAME.$$
+#
+    trap "rm -f $tmpbase.[a-e]; rm_trash_shfile; exit 1" 1 2 3 15
+#
+    cache_body=$tmpbase.b
+#
+# For oscheck.sh
+#
+    temp_file=$tmpbase.c
+#
+# Do not use ARCH if it exists in the environment
+#
+    ARCH=""
+
+#
+# Use ~ iff HOME is undefined.
+#
+    HOME=${HOME=~}
+
+#
+#========================= archlist.sh (start) ============================
+#
+# usage:        archlist.sh
+#
+# abstract:     This Bourne Shell script creates the variable ARCH_LIST.
+#
+# note(s):      1. This file is always imbedded in another script
+#
+# Copyright 1997-2007 The MathWorks, Inc.
+# $Revision: 1.1.6.3 $  $Date: 2009/12/07 20:19:14 $
+#----------------------------------------------------------------------------
+#
+    ARCH_LIST='glnx86 glnxa64 mac maci maci64 sol2 sol64'
+#=======================================================================
+# Functions:
+#   check_archlist ()
+#=======================================================================
+    check_archlist () { # Sets ARCH. If first argument contains a valid
+			# arch then ARCH is set to that value else
+		        # an empty string. If there is a second argument
+			# do not output any warning message. The most
+			# common forms of the first argument are:
+			#
+			#     ARCH=arch
+			#     MATLAB_ARCH=arch
+			#     argument=-arch
+			#
+                        # Always returns a 0 status.
+                        #
+                        # usage: check_archlist arch=[-]value [noprint]
+                        #
+	if [ $# -gt 0 ]; then
+	    arch_in=`expr "$1" : '.*=\(.*\)'`
+	    if [ "$arch_in" != "" ]; then
+	        ARCH=`echo "$ARCH_LIST EOF $arch_in" | awk '
+#-----------------------------------------------------------------------
+	{ for (i = 1; i <= NF; i = i + 1)
+	      if ($i == "EOF")
+		  narch = i - 1
+	  for (i = 1; i <= narch; i = i + 1)
+		if ($i == $NF || "-" $i == $NF) {
+		    print $i
+		    exit
+		}
+	}'`
+#-----------------------------------------------------------------------
+	       if [ "$ARCH" = "" -a $# -eq 1 ]; then
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+echo ' '
+echo "    Warning: $1 does not specify a valid architecture - ignored . . ."
+echo ' '
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	       fi
+	    else
+		ARCH=""
+	    fi
+	else
+	    ARCH=""
+	fi
+#
+	return 0
+    }
+#=======================================================================
+#========================= archlist.sh (end) ==============================
+#
+#=======================================================================
+# Functions:
+#   scriptpath ()
+#   get_arch ()
+#   set_deploytool_env ()
+#   check_env ()
+#   check_matlab_bin ()
+#   check_deploytool
+#   set_os_env ()
+#   cache_body_template ()
+#   build_arglist ()
+#   newawk ()
+#
+#   rm_trash_shfile ()
+#=======================================================================
+    scriptpath () { # Returns path of this script as a directory,
+                    # ROOTDIR, and command name, CMDNAME.
+		    #
+		    # Returns a 0 status unless an error.
+		    #
+                    # usage: scriptpath
+                    #
+#
+	filename=$arg0_
+#
+# Now it is either a file or a link to a file.
+#
+        cpath=`pwd`
+#
+# Follow up to 8 links before giving up. Same as BSD 4.3
+#
+        n=1
+        maxlinks=8
+        while [ $n -le $maxlinks ]
+        do
+#
+# Get directory correctly!
+#
+	    newdir=`echo "$filename" | awk '
+                { tail = $0
+                  np = index (tail, "/")
+                  while ( np != 0 ) {
+                      tail = substr (tail, np + 1, length (tail) - np)
+                      if (tail == "" ) break
+                      np = index (tail, "/")
+                  }
+                  head = substr ($0, 1, length ($0) - length (tail))
+                  if ( tail == "." || tail == "..")
+                      print $0
+                  else
+                      print head
+                }'`
+	    if [ ! "$newdir" ]; then
+	        newdir="."
+	    fi
+	    (cd $newdir) > /dev/null 2>&1
+	    if [ $? -ne 0 ]; then
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo ''
+    echo 'Internal error 1: We could not determine the path of the'
+    echo '                  this command.'
+    echo ''
+    echo "                  original command path = $arg0_"
+    echo "                  current  command path = $filename"
+    echo ''
+    echo '                  Please contact:'
+    echo '' 
+    echo '                      MathWorks Technical Support'
+    echo ''
+    echo '                  for further assistance.'
+    echo ''
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	        return 1
+	    fi
+	    cd $newdir
+#
+# Need the function pwd - not the built in one
+#
+	    newdir=`/bin/pwd`
+#
+	    newbase=`expr //$filename : '.*/\(.*\)' \| $filename`
+            lscmd=`ls -l $newbase 2>/dev/null`
+	    if [ ! "$lscmd" ]; then
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo ''
+    echo 'Internal error 2: Could not determine the path of the'
+    echo '                  this command.'
+    echo ''
+    echo "                  original command path = $filename"
+    echo "                  current  command path = $filename"
+    echo ''
+    echo '                  Please contact:'
+    echo '' 
+    echo '                      MathWorks Technical Support'
+    echo ''
+    echo '                  for further assistance.'
+    echo ''
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	        return 1
+	    fi
+#
+# Check for link portably
+#
+	    if [ `expr "$lscmd" : '.*->.*'` -ne 0 ]; then
+	        filename=`echo "$lscmd" | awk '{ print $NF }'`
+	    else
+#
+# It's a file
+#
+	        dir="$newdir"
+	        CMDNAME="$newbase"
+#
+	        cd $dir/..
+	        MATLAB=`/bin/pwd`; export MATLAB
+	        break
+	    fi
+	    n=`expr $n + 1`
+        done
+        if [ $n -gt $maxlinks ]; then
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo ''
+    echo 'Internal error 3: More than $maxlinks links in path to'
+    echo "                  this script. That's too many!"
+    echo ''
+    echo "                  original command path = $filename"
+    echo "                  current  command path = $filename"
+    echo ''
+    echo '                  Please contact:'
+    echo '' 
+    echo '                      MathWorks Technical Support'
+    echo ''
+    echo '                  for further assistance.'
+    echo ''
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	    return 1
+        fi
+        cd "$cpath"
+        return 0
+    }
+#=======================================================================
+    get_arch () { # Determine the value of ARCH. MATLAB is assumed
+		  # to be defined.
+		  #
+                  # Returns a 0 status unless it could not determine it.
+                  #
+                  # usage: get_arch
+                  #
+	if [ "$ARCH" = "" ]; then
+	    . $MATLAB/bin/util/arch.sh
+	    export ARCH
+	fi
+        if [ "$ARCH" = "unknown" ]; then
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo ' '
+    echo 'Error: Invalid machine architecture . . .'
+    echo ' '
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	    return 1
+	fi
+	return 0
+    }
+
+#=======================================================================
+    cache_body_template () { # Output the cache body template to standard
+                             # output.
+                             #
+                             # Always returns a 0 status
+                             #
+                             # usage: cache_body_template
+                             #
+#-----------------------------------------------------------------------
+        echo "#"
+        echo 'DISPLAY=$DISPLAY; export DISPLAY'
+        echo "#"
+        echo 'ARCH=$ARCH; export ARCH'
+        echo "#"
+        echo 'MATLAB=$MATLAB; export MATLAB'
+        echo "#"
+        echo 'AUTOMOUNT_MAP=$AUTOMOUNT_MAP; export AUTOMOUNT_MAP'
+        echo "#"
+#
+        case "$ARCH" in
+            sol2|sol64|glnx86|glnxi64)
+                echo 'LD_LIBRARY_PATH=$LD_LIBRARY_PATH; export LD_LIBRARY_PATH'
+                ;;
+            mac|maci|maci64)
+                echo 'DYLD_FALLBACK_LIBRARY_PATH=$DYLD_FALLBACK_LIBRARY_PATH; export DYLD_FALLBACK_LIBRARY_PATH'
+                echo 'DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH; export DYLD_LIBRARY_PATH'
+                ;;
+            *)
+                echo 'LD_LIBRARY_PATH=$LD_LIBRARY_PATH; export LD_LIBRARY_PATH'
+                ;;
+        esac
+        echo "#"
+        echo 'MATLABPATH=$MATLABPATH; export MATLABPATH'
+        echo "#"
+        echo 'BASEMATLABPATH=$BASEMATLABPATH; export BASEMATLABPATH'
+        echo "#"
+        echo 'TOOLBOX=$TOOLBOX; export TOOLBOX'
+        echo "#"
+        echo 'XAPPLRESDIR=$XAPPLRESDIR; export XAPPLRESDIR'
+        echo "#"
+        echo 'XFILESEARCHPATH=$XFILESEARCHPATH; export XFILESEARCHPATH'
+        echo "#"
+        echo 'XKEYSYMDB=$XKEYSYMDB; export XKEYSYMDB'
+        echo "#________________________________________________________________"
+#-----------------------------------------------------------------------
+        return 0
+    }
+#=======================================================================
+    build_arglist () { # The variable arglist is the input which has
+		       # arguments separated by newlines. It outputs
+		       # a single string correctly quoted to be evaluated.
+		       # 
+                       # Always returns a 0 status
+                       #
+                       # usage: build_arglist
+                       #
+	echo "$arglist" | awk '
+#----------------------------------------------------------------------------
+	BEGIN { squote = sprintf ("%c", 39)   # set single quote
+                dquote = sprintf ("%c", 34)   # set double quote
+	      }
+NF != 0 { newarg=squote                 # initialize output string to
+                                        # single quote
+          lookquote=squote              # look for single quote
+          oldarg = $0
+          while ((i = index (oldarg, lookquote))) {
+             newarg = newarg substr (oldarg, 1, i - 1) lookquote
+             oldarg = substr (oldarg, i, length (oldarg) - i + 1)
+             if (lookquote == squote)
+                lookquote = dquote
+             else
+                lookquote = squote
+             newarg = newarg lookquote
+          }
+          printf " %s", newarg oldarg lookquote }'
+#----------------------------------------------------------------------------
+	return 0
+    }
+
+#=======================================================================
+    set_deploytool_env ()  { # Execute the MATLAB script with the -e option
+			     # which returns all the environment variables and
+   		             # their values without executing MATLAB. Use
+		             # these values to fill out the cache body template
+		             # to make the cache body and source it to set the
+		             # values in the environment.
+		             #
+                             # Returns a 0 status unless it failed for some
+		             # reason.
+                             #
+                             # usage: set_deploytool_env
+                             #
+#
+# Determine ARCH
+#
+	get_arch
+	if [ $? -ne 0 ]; then
+	    return 1
+	fi
+	export ARCH
+#
+	nawk=`newawk`
+#
+# Call the MATLAB script to get the environment variables and their
+# values. 
+#
+        echo "n" > $tmpbase.e
+        ($MATLAB/bin/matlab -$ARCH -e > $tmpbase.a
+        status=$?
+        if [ $status -ne 0 ]; then
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo ' '
+    echo 'Error: The MATLAB script returned a bad status while determining'
+    echo   '       environment variables. There appears to be a problem'
+    echo   '       with your MATLAB installation. You must fix the problem'
+    echo   '       before deploytool can work. Any messages from the script'
+    echo   '       follow . . . '
+    echo ' '
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            cat $tmpbase.a | $nawk '
+#------------------------------------------------------------------------------
+    {if (index($0,"=") != 0) next; print }'
+#------------------------------------------------------------------------------
+            return $status
+        fi) < $tmpbase.e || return $?
+
+#
+# Fill out the cache file template with the values
+# Deploytool doesn't creat a cache file as mcc does, but it uses
+# the same logic to export the environment variables.
+#
+	echo "EOF" >> $tmpbase.a
+	cache_body_template >> $tmpbase.a
+#
+        cat $tmpbase.a | $nawk '
+#------------------------------------------------------------------------------
+    BEGIN {state = 0
+	   squote = sprintf ("%c", 39)   # set single quote
+	  }
+    $1 == "EOF" {state = 1; next}
+    state == 0 {i = index($0,"=")
+                name = substr($0,1,i-1)
+                value = substr($0,i+1)
+                new[name] = value; next }
+    state == 1 {i = match($0,"=\\$[A-Za-z_][A-Za-z0-9_]*")
+		if (i == 0) { print; next } 
+		name = substr($0,i+2,RLENGTH-2);
+		print substr($0,1,i) squote new[name] squote substr($0,i+RLENGTH)
+		}' > $cache_body
+#------------------------------------------------------------------------------
+	. $cache_body > /dev/null 2>&1
+
+#
+# Check the environment
+#
+	check_env
+#
+	rm -f $tmpbase.a
+        rm -f $tmpbase.e
+	return $?
+    }
+#=======================================================================
+    check_env () { # Do a check on the environment. Check:
+		   # 
+		   # 1. OS check
+		   # 2. MATLAB bin directory check
+		   # 3. deploytool binary check
+		   #
+		   # Returns a 0 status unless a problem occurred.
+		   #
+		   # usage: check_env
+		   #
+#
+# Check OS version
+#
+        if [ -f $MATLAB/bin/util/oscheck.sh ]; then
+	    . $MATLAB/bin/util/oscheck.sh
+	    if [ "$oscheck_status" = "1" ]; then
+	        return 1
+	    fi
+        fi
+#
+	check_matlab_bin
+	if [ $? -ne 0 ]; then
+	    return 1
+	fi
+#
+	check_deploytool
+	if [ $? -ne 0 ]; then
+	    return 1
+	fi
+#
+	return 0
+    }
+#=======================================================================
+    check_matlab_bin () { # Check that MATLAB bin directory exists for
+			  # current architecture.
+			  #
+		          # Returns a 0 status unless it does not exist.
+		          #
+		          # usage: check_matlab_bin
+		          # 
+        if [ ! -d $MATLAB/bin/$ARCH ]; then
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo "-----------------------------------------------------------------"
+    echo "Error: No MATLAB bin directory for this machine architecture."
+    echo "       ARCH = $ARCH" 
+    echo "-----------------------------------------------------------------"
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            return 1
+        fi
+	return 0
+    }
+#=======================================================================
+    check_deploytool () { # Check that deploytool binary exists.
+		   #
+		   # Returns a 0 status unless it does not exist.
+		   #
+		   # usage: check_deploytool
+		   # 
+        if [ ! -f $MATLAB/bin/$ARCH/deploytool ]; then
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    echo "-----------------------------------------------------------------"
+    echo "Error: No Deploytool executable for this machine architecture."
+    echo "       $MATLAB/bin/$ARCH/deploytool does not exist!"
+    echo "-----------------------------------------------------------------"
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	    return 1
+        fi
+	return 0
+    }
+#=======================================================================
+    newawk () { # Returns the basename of the 'new' awk program on the
+		# current host. nawk is only available on Solaris.
+	        # Some distributions of Linux distribute mawk. However,
+                # since this is not standard in all distributions, use awk.
+		#
+		# Always returns a 0 status
+		#
+		# usage: newawk
+		#
+        case "$ARCH" in
+            sol2|sol64)
+                echo "nawk"
+                ;;
+             *)
+                echo "awk"
+	esac
+	return 0
+    }
+#=======================================================================
+   rm_trash_shfile () { # On many platforms there is a shell bug which
+		        # leaves around a /tmp/sh$$* file for a here
+			# document. We will attempt to remove the file
+			# on any platform without checking for the ARCH.
+			#
+			# We have observed the following:
+			#
+			# hpux:
+			#     /tmp/sh$$.1
+			#
+                        # Always returns a 0 status.
+                        #
+                        # usage: rm_trash_shfile
+                        #
+        rm -f /tmp/sh$$0 /tmp/sh$$.* > /dev/null 2>&1
+	return 0
+    }
+#=======================================================================
+  set_deploytool_cmd () {
+        deploytool_cmd="$MATLAB/bin/$ARCH/deploytool"
+  }
+#=======================================================================
+#
+#**************************************************************************
+#
+
+#
+# Parse the arguments
+#
+    bin_echo=/bin/echo	
+    if [ "`echo '\n' | awk 'NF == 1 { print 1 }'`" = "1" ]; then
+        use_bin_echo=1
+    fi
+    if [ "$use_bin_echo" = "1" ]; then
+#
+# -e is a required option on Redhat Linux only. Otherwise no option.
+#
+	echo_option=`$bin_echo -e | awk 'NF == 0 { print "-e"}'`
+        if [ "`$bin_echo $echo_option '\n' | awk 'NF == 1 { print 1 }'`" = "1" ]; then
+            bin_echo=printf
+        fi
+
+        arglist=`$bin_echo $echo_option '\n'`
+    else
+        arglist='\n'
+    fi
+    narg=$#
+
+    while [ $# -gt 0 ]; do
+	if [ "$use_bin_echo" = "1" ]; then
+	    arglist=`$bin_echo $echo_option "${arglist}\n$1"`
+	else
+	    arglist="${arglist}\n$1"
+	fi
+	shift
+    done
+
+#   setup the environment and start the command
+
+    scriptpath
+
+    set_deploytool_env
+
+#
+# To guarantee that mcc is available. However, note that
+# is is the mcc in the same directory as deploytool.
+#
+
+    PATH=$MATLAB/bin:$PATH; export PATH
+#
+# Work around shell bug on alpha with here documents.
+#
+    rm_trash_shfile
+#
+    set_deploytool_cmd
+    
+    eval exec $deploytool_cmd `build_arglist` 
